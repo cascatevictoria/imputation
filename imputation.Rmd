@@ -1,0 +1,450 @@
+---
+title: "Imputation, PCA, and Logistic Regression"
+author: "Bolotova Victoria, Samylova Arina, Kirilova Eva"
+output: 
+    html_document:
+      theme: cosmo
+      code_folding: show
+      toc: true
+      toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Contribution
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(kableExtra)
+Team_member <- c("Victoria Bolotova", "Arina Samylova",  "Eva Kirilova")
+Contribution <- c("Analysis of imputations with Zelig, Building and interpretation of logistic regression", 
+                  "Visual analysis of missings, Little test, multiple imputations by Amelia", "Writing idea of the project, PCA")
+contr <- data.frame(Team_member, Contribution)
+kable(contr) %>% 
+  kable_styling(bootstrap_options=c("bordered", "responsive","striped"), full_width = TRUE)
+```
+
+# Idea of the Project
+
+For this project we have decided to analyse political participation of German citizens. We have taken variables from ESS round 9, year 2018. 
+
+To be more precise, we want to find out which variables related to politics, including trust, political interest, party allegiance, satisfaction and other forms of political engagement, affect electoral participation (whether a person voted or not). 
+
+We decided to take Germany because it is one of the countries of Western Europe that has well-established and good-working democracy.
+
+RQ: *Which factors related to politics affect voting turnout?*
+
+For the purpose of the project we will build logistic regression model, based on analysis of missings and multiple imputation. Also, we will look at PCA results to see whether our variables contribute to a greater dimensionality of data and, thus, to entanglement of relationships.  
+
+# Description of Variables 
+
+**Dependent variable:**
+
+* vote - Voted last national election
+  
+**Independent variables:**
+
+* polintr - How interested in politics
+* lrscale - Placement on left right scale
+* trstprl - Trust in parliament 
+* trstplt - Trust in politicians
+* stflife - Life satisfaction
+* prtdgcl - How close to party
+* stfeco - How satisfied with present state of economy in country
+
+
+# Data Preprocessing 
+
+```{r}
+library(haven)
+library(tidyverse)
+library(naniar)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(foreign)
+library(haven)
+library(mice)
+library(Amelia)
+library(car)
+library(gplots) 
+library(Zelig)
+library(xtable)
+library(stargazer)
+library(knitr)
+library(sjPlot)
+library(mctest)
+library(car)
+library(broom)
+library(DAAG)
+library(yardstick)
+
+df1 <- read_sav("ESS9e03_1.sav")
+df1 <- df1 %>% haven::as_factor()
+
+df <- df1 %>% filter(cntry == "Germany") %>% select(vote, polintr, lrscale, trstplt, trstprl, stflife, stfeco, prtdgcl) 
+```
+
+First, we need to transform some variables into numeric format and do other manipulations.
+
+```{r}
+df$lrscale <- as.numeric(as.character(df$lrscale))
+df$trstplt <- as.numeric(as.character(df$trstplt))
+df$trstprl <- as.numeric(as.character(df$trstprl))
+df$stfeco <- as.numeric(as.character(df$stfeco))
+df$stflife <- as.numeric(as.character(df$stflife))
+
+
+#delete unnecessary levels
+df <- droplevels(df[df$vote %in% c("Yes", "No"), ])
+
+#relevel
+df$vote <- ifelse(df$vote == "Yes", 1, 0)
+df$vote <- as.factor(as.character(df$vote))
+df$vote <- relevel(df$vote, ref = "0")
+```
+
+# Missings & Imputation
+
+## The largest number of NAs
+
+* The variable **prtdgcl - 'How close to party'** has the largest number of NA and in comparison with other variables, 962 missing values seems huge. 
+* The second variable that at the first glance seems not fine is **stflife - 'Life Satisfaction '**, there are  332 NAs. 
+* **polintr - How interested in politics** has only 1 missing value
+* **vote** - 'Voted last national election' we dropped manually as a dependent variable for the further model.
+* Variables **lrscale**, **trstplt**, **trstprl**, and **stfeco** have approximately the same number of missings ~ from  176 to 239.
+
+```{r}
+sapply(df, function(x) sum(is.na(x)))
+```
+
+There are 2088 NAs in the dataset in total.
+
+```{r}
+length(which(is.na(df)))
+```
+
+## Visualization of NAs 
+
+Let's visualize the missing data in several ways for better understanding the scale of the problem and easier comparison with other variables' NAs in order to take decision how to treat the data for further analysis. 
+
+### Pareto chart
+
+* We can easily recognize the most problematic variable that we have already mentioned earlier: **prtdgcl - 'How close to party'**. Its missing grade is 45.4% that is considered as 'Bad' (as <=50%). 
+
+* The variables **stflife - 'Life Satisfaction'** and **trstplt - 'Trust in politicians'** occurred to be 'Not Bad'(<=20%): missing grade are 15.7% and 11.3% respectively. 
+
+* The rest variables are considered as 'OK'. 
+
+```{r}
+library(dlookr)
+
+plot_na_pareto(df)
+```
+
+
+### Distribution by combination of vaiables 
+
+This type of the plots helps to see the distribution of missing values paying attention to possible overlapping: using previous graph we could not understand whether values in different columns belong to the same observation. Thus, looking at the relationship between variables and their missing values, we observe some noticeable overlapping in observations of our major NA variable **prtdgcl - 'How close to party'** mostly with:
+
+- stflife - 'Life Satisfaction'
+- stfeco - 'How satisfied with present state of economy in country';
+- trstplt - 'Trust in politicians';
+
+Another pattern is overlapping between:
+
+- trstplt - 'Trust in parliament';
+- trstplt - 'Trust in politicians'
+
+Both cases seem not coincidence as they are close to each other thematically: estimation of life/country satisfaction and trust related to political field. 
+
+There are a bit more relationships among all the variables but their number is quite small.
+
+```{r fig.width=10, fig.height= 8}
+plot_na_hclust(df)
+```
+
+### Intersection of variables 
+
+This plot helps to reveal the cases with combinations of missing values across columns.
+ 
+As we can see compare with the previous plot, there is, for example, the minimum intersection with the variable **polintr - How interested in politics.** as there is only 1 missing value.
+
+There are cases of almost complete intersections among almost all the variables. However, their missing values are very low, the vast majority of missing data is concentrated separately in **prtdgcl - How close to party**, **stflife - 'Life Satisfaction'** and **trstplt - 'Trust in politicians'**(and the diagram at the right helps to understand it);
+
+```{r fig.width=10, fig.height= 8}
+plot_na_intersect(df)
+```
+
+One more plot to confirm our findings.
+
+According to high value in bar of **prtdgcl - How close to party** in the left and only one dot that indicates the missing, we understand that there is no multiple missing among the rows as a prevailing trend. The similar situation with **stflife - 'Life Satisfaction'**. There is relationship between them as we observed earlier, but its intersection size is 77, while their singular missing contribution is much higher. **trstplt - 'Trust in politicians'** have relationship with **prtdgcl - How close to party**, its intersection size is 52.
+
+```{r}
+library(naniar)
+gg_miss_upset(df)
+```
+
+### Pattern of missing data
+
+We have 785 complete observations. According to the second row, 622 observations have missing values for one variable (visually 1 dot in the right), from the table we understand that it is the variable **prtdgcl - How close to party** as it has 0 mark instead of 1. This variable can be missing by itself, as well as 'Life Satisfaction' and 'Trust in politicians'. 
+
+However, there are situations when 'Life Satisfaction' and 'Trust in politicians' are missing when 'How close to party' is missing too.
+
+The general pattern seems to be non-monotone or general.
+
+
+```{r}
+library(mice)
+summary(df$prtdgcl)
+mdpat <- md.pattern(df, plot = FALSE, rotate.names = FALSE)
+mdpat <- md.pattern(df, plot = TRUE, rotate.names = FALSE)
+head(mdpat)
+```
+
+### Box plots 
+ 
+In a case of Missing Completely at Random, the box plots of two compared variable would be very similar. If we have a look at some variables' pairs that we noticed in previews observation, we see that box plots are not the same, so more likely we have a deal with MAR but we will aslo check it with a test further.  
+ 
+The red box plot on the left shows 'Life Satisfaction'  distribution with 'How close to party' missing.  
+ 
+The same for 'How close to party' and 'Trust in politicians'; 
+
+```{r}
+library(VIM) 
+df2 <- df %>% 
+  mutate(prtdgcl = as.character(prtdgcl))%>% 
+  mutate(stflife = as.numeric(stflife)) 
+marginplot(df2[,c('prtdgcl', 'stflife')]) 
+```
+
+
+```{r}
+df2 <- df %>% 
+  mutate(prtdgcl = as.character(prtdgcl))%>% 
+  mutate(trstplt = as.numeric(trstplt)) 
+marginplot(df2[,c('prtdgcl', 'trstplt')])
+```
+
+'Trust in parliament' and 'Trust in politicians'; 
+
+```{r}
+df2 <- df %>% 
+  mutate(trstprl = as.numeric(trstprl))%>% 
+  mutate(trstplt = as.numeric(trstplt)) 
+marginplot(df2[,c('trstprl', 'trstplt')]) 
+```
+
+And 'Life Satisfaction' and 'How satisfied with present state of economy in country'. 
+ 
+```{r}
+df2 <- df %>% 
+  mutate(stflife = as.numeric(stflife))%>% 
+  mutate(stfecot = as.numeric(stfeco)) 
+marginplot(df2[,c('stflife', 'stfeco')])
+```
+
+## Little test
+
+(MCAR vs MAR or MNAR) 
+
+The p-vale is close to 0, so it is < 0.05, therefore, we reject the null hypotheses that there is no distinct missingness pattern. Thus, we have MAR or MNAR. 
+
+```{r}
+library(misty)
+na.test(df)
+```
+
+We can suppose that one of our variables, with the largest percent of missings, is characterized by MNAR. We are talking about variable `prtdgcl` - how close to party. 
+Visual analysis of graphs above shows that missings of the prtdgcl variable are not really related to the missings of other variables. It means that the extent of missingness is not correlated with other variables that are included in this research. Probably, we deal with situation (common in MNAR) when people of certain degree of closeness to a party, do not want to report their closeness to a party. For example, from below table we can see that there are very few observation in extreme categories - **very close** and **not at all close**. However, after consultations with the course instructor, we decided to impute all variables, including `prtdgcl`. 
+
+```{r}
+summary(df$prtdgcl)
+```
+
+
+We will perform imputation referring to the MAR type within the project frames, however, as there is no formal test that would determine MAR or MNAR, we understand that we cannot exclude our possible assumption of MNAR when imputation is not suitable
+
+# Amelia imputation
+
+We will use multiple imputation of all the variables divided into nominal and ordinal categories. Amelia imputation method is suitable for MAR.
+
+```{r}
+df_Amelia <- as.data.frame(df)
+```
+
+```{r}
+set.seed(12345) # to get stable result after running code several times
+imputation <- amelia(df_Amelia, m = 10, noms = c("vote", "polintr", "prtdgcl"), ords = c("trstprl", "lrscale", "trstplt", "stfeco", "stflife"))
+```
+
+
+# Comparasion of imputations with Zelig
+
+```{r}
+library(Zelig)
+z.out <- zelig(vote ~ polintr + lrscale + trstprl + trstplt + stflife + stfeco + prtdgcl, model = "logit", data = imputation, cite = FALSE)
+
+summary(z.out, subset = 1:10) # look at all 10 imputations
+```
+- Summary of zelig for our logistic regression provides us with two important measures of goodness-of-fit: AIC and residual deviance. 
+  - The smaller the AIC value, the better the model fit. 
+  - The lower the residual deviance, the better the model. The deviance is a key concept in logistic regression. Intuitively, it measures the deviance of the fitted logistic model with respect to a perfect model 
+  
+Below we compare these two metrics between imputations.
+
+- 1st imputation
+  - AIC: 1382
+  - Residual deviance: 1358
+
+- *2nd imputation*
+  - **AIC: 1349**
+  - **Residual deviance: 1325**
+  
+- 3nd imputation
+  - AIC: 1360
+  - Residual deviance: 1384
+  
+- 4th imputation
+  - AIC: 1374
+  - Residual deviance: 1350
+  
+- 5th imputation
+  - AIC: 1574
+  - Residual deviance: 1340
+  
+- 6th imputation
+  - AIC: 1376
+  - Residual deviance: 1352
+  
+- 7th imputation
+  - AIC: 1366
+  - Residual deviance: 1341.6
+  
+- 8th imputation
+  - AIC: 1377
+  - Residual deviance: 1353
+
+- 9th imputation
+  - AIC: 1379.3
+  - Residual deviance: 1355
+  
+- 10th imputation
+  - AIC: 1387
+  - Residual deviance: 1363
+  
+
+* -> It turns out that the 2nd imputation is the best one, because it has the smallest values for AIC and Residual deviance
+
+# PCA
+
+As we found out, owing to Zelig, the 2nd imputation is the best among other imputations, let's work with it.
+
+```{r}
+imp <- imputation$imputations$imp2
+imp.pca <- prcomp(imp[,c(3:7)], center = TRUE, scale. = TRUE)
+
+#variance
+
+summary(imp.pca)
+```
+
+* The first component explains ~41% of variance, the second one -- around 22% of variance, and other components explain less than 20%. So, the first component is not enough to explain the variance in the sample. We need at least three components for a satisfactory result.
+
+```{r}
+library(scales)
+library(ggbiplot)
+
+ggbiplot(imp.pca, alpha = 0.2, groups = imp$vote, ellipse = TRUE) +
+  scale_colour_manual(name="Have voted", values= c("forest green", "red")) +
+  ggtitle("PCA of ESS dataset Politics related variables")+
+  theme_minimal()
+```
+
+* Judging by the plot, it is really hard to distinguish separate components, and both PCAs have positive values. Also, due to the anonymity of survey data it is not possible to look at observations and come up with features that may unite them.
+
+We can also look at correlation matrix to understand variables' relations to each other.
+
+```{r}
+cor(imp[,c(3:7)], method = "spearman")
+```
+
+* All the variables we've chosen have small correlation coefficients except trust to parliament and trust to politician (cor = 0.6), but we don't think considering this connection will drastically change the picture. This signals that ESS variables in the Politics block are actually measuring different things.
+
+* As a conclusion, we think there is no need to lower dimentionality.
+
+# Binary Logistic Regression 
+
+```{r}
+library(sjPlot)
+labs <- c("Constant", "How interested in politics (Quite interested)", 
+          "How interested in politics (Hardly interested)", 
+          "How interested in politics (Not at all interested)", 
+          "Placement on left right scale", 
+          "Trust in parliament",
+          "Trust in politicians", 
+          "Life satisfaction", 
+          "Satisfaction with present state of economy in country",
+          "How close to party (Quite close)", 
+          "How close to party (Not close)", 
+          "How close to party (Not at all close)")
+
+model1 <- glm(vote ~ polintr + lrscale + trstprl + trstplt + stflife + stfeco + prtdgcl, data = imp, family = "binomial")
+
+tab_model(model1, pred.labels = labs, title = "Logistic Regression: Factors that affect participation in voting ", dv.labels = "Voted last national election")
+```
+
+- **How interested in politics**
+  - Those who answered that they are quite interested in politics are not statistically different in probability of voting from those who answered that they are very interested in politics (p-value = 0.56)
+  - However, the odds of participation in voting are significantly lower by 65% for those who are hardly interested in politics compared to those who are very interested in politics (OR = 0.35, p-value < 0.001)
+  - Also, the odds of participation in voting are lower by 90% for those who are not at all interested in politics compared to those who are very interested in politics (OR = 0.10, p-value < 0.001)
+  
+- **Placement of left right scale**, **trust in parliament**, and **trust in politicians** do not significantly affect participation in voting as p-values equals to 0.9, 0.7 and 0,5 respectively.
+
+- **Life satisfaction** has significant effect on voting. The odds of participation in voting increases by 14% with each unit increase in life satisfaction (OR = 1.14, p-value = 0.001).
+
+- **Satisfaction with present state of economy** in country has significant effect on voting. The odds of participation in voting increases by 17% with each unit increase in satisfaction with present state of economy (OR = 1.17, p-value < 0.001).
+
+- **How close to party**
+  - Those who answered that they are quite close to party are not statistically different in probability of voting from those who answered that they are very close to party (p-value = 0.3)
+  -  However, the odds of participation in voting are lower by 72% for those who are not close to party compared to those who answered that they are very close to party (OR = 0.28, p-value < 0.001)
+  - The odds of participation in voting are lower by 60% for those who are not at all close to party compared to those who answered that they are very close to party (OR = 0.4, p-value = 0.014)
+
+```{r}
+library(DescTools)
+PseudoR2(model1)
+```
+
+PseudoR equals to 0.16, which can be considered as satisfactory.
+
+However, the aim of logistic regression is classification, thus, let's look at predicted classification vs true classification. 
+
+```{r}
+library(pscl)
+hitmiss(model1)
+```
+
+* The model is far from good at correctly identifying those, who did not participate in voting.  Thus, Percent Correctly Predicted for those who participated is 99%, but Percent Correctly Predicted for those who did not participated is only 10%. 
+
+* Probably, one of the reasons of such poor classification is that we have class imbalance (1860 voters against only 259 non-voters). 
+
+
+# Conclusion 
+
+This small research helps us to answer our main research question. It turned out that the following factors affected participation in last national election in Germany:
+
+* Interest in politics. The higher the interest, the higher probability of voting.
+* Life satisfaction. The higher life satisfaction, the higher probability of voting.
+* Satisfaction with present state of economy in country. The higher satisfaction with economy, the higher probability of voting.
+* Closeness to party. The closer a person feel to a party, the higher probability of voting. 
+
+- However, some factors showed insignificant effect on voting behavior such as trust in parliament, trust in politicians, and placement on left right scale. 
+
+- Analysis of missings allowed us understand data better, which helped us conduct multiple imputation, choose the best one among 10, and then further used it in the logit model. PCA revealed that there was no necessity to reduce dimensionality, as all the variables contributed to the prediction on their own.
+
+- All in all, the model turned out to be not very good, so for further analysis it is essential to use other than related to politics explanatory variables.
+
+That's all for this project! 
+
